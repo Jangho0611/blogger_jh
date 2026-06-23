@@ -3657,6 +3657,17 @@ function markImageGenerationErrorStatus_(message) {
   }
 }
 
+function formatImageGenerationErrorMessage_(message) {
+  var rawMessage = String(message || '이미지 생성 오류');
+  if (rawMessage.indexOf('GitHub') !== -1) {
+    return 'GitHub 오류: ' + rawMessage;
+  }
+  if (rawMessage.indexOf('OpenAI') !== -1) {
+    return 'OpenAI 오류: ' + rawMessage;
+  }
+  return '이미지 오류: ' + rawMessage;
+}
+
 function ensurePublishControlHeaders_(sheet) {
   if (!sheet) return;
 
@@ -4338,7 +4349,7 @@ function generateOpenAIImageOnly_(seoFileId) {
     var openAiImage1 = generateImageWithOpenAI_(prompt1, imageFolder.getId(), openAiFileName);
 
     if (!openAiImage1 || !openAiImage1.publicUrl) {
-      throw new Error('OpenAI image1 생성 또는 업로드에 실패했습니다.');
+      throw new Error((openAiImage1 && openAiImage1.errorMessage) || 'OpenAI image1 생성 또는 업로드에 실패했습니다.');
     }
 
     recordGeneratedOpenAIImage_(openAiImage1, prompt1, {
@@ -4365,12 +4376,14 @@ function generateOpenAIImageOnly_(seoFileId) {
       image1Url: openAiImage1.publicUrl
     };
   } catch (error) {
-    Logger.log('❌ OpenAI 이미지 생성 오류: ' + error.message);
-    updatePublishStatus_(sheet, statusRowIndex, '오류');
-    SpreadsheetApp.getUi().alert('❌ OpenAI 이미지 생성 오류\n\n' + error.message);
+    var imageErrorMessage = formatImageGenerationErrorMessage_(error.message);
+    Logger.log('❌ OpenAI 이미지 생성 오류 error.message 전체: ' + error.message);
+    Logger.log('❌ OpenAI 이미지 생성 오류 error.stack 전체: ' + error.stack);
+    markImageGenerationErrorStatus_(imageErrorMessage);
+    SpreadsheetApp.getUi().alert('❌ OpenAI 이미지 생성 오류\n\n' + imageErrorMessage.substring(0, 1000));
     return {
       success: false,
-      error: error.message
+      error: imageErrorMessage
     };
   } finally {
     releaseExecutionFlag_(EXECUTION_FLAGS.OPENAI_IMAGE_RUNNING, 'generateOpenAIImageOnly_');
@@ -4432,7 +4445,7 @@ function reviseOpenAIImage(revisionRequest) {
     var revisedImage = generateImageWithOpenAI_(revisedPrompt, imageFolder.getId(), revisedFileName);
 
     if (!revisedImage || !revisedImage.publicUrl) {
-      throw new Error('수정 이미지 생성 또는 업로드에 실패했습니다.');
+      throw new Error((revisedImage && revisedImage.errorMessage) || '수정 이미지 생성 또는 업로드에 실패했습니다.');
     }
 
     writeCurrentImage1UrlToSheet_(revisedImage.publicUrl);
@@ -4466,12 +4479,14 @@ function reviseOpenAIImage(revisionRequest) {
       generatedAt: new Date().toISOString()
     };
   } catch (error) {
-    Logger.log('❌ reviseOpenAIImage 오류: ' + error.message);
-    Logger.log('❌ reviseOpenAIImage 스택: ' + error.stack);
-    SpreadsheetApp.getUi().alert('이미지 수정 오류\n\n' + error.message);
+    var reviseErrorMessage = formatImageGenerationErrorMessage_(error.message);
+    Logger.log('❌ reviseOpenAIImage 오류 error.message 전체: ' + error.message);
+    Logger.log('❌ reviseOpenAIImage 오류 error.stack 전체: ' + error.stack);
+    markImageGenerationErrorStatus_(reviseErrorMessage);
+    SpreadsheetApp.getUi().alert('이미지 수정 오류\n\n' + reviseErrorMessage.substring(0, 1000));
     return {
       success: false,
-      error: error.message
+      error: reviseErrorMessage
     };
   }
 }
@@ -7602,7 +7617,7 @@ function generateImageWithOpenAI_(prompt, folderId, fileName) {
   } catch (error) {
     var fullMessage = String(error && error.message ? error.message : error);
     var fullStack = String(error && error.stack ? error.stack : '');
-    var statusPrefix = fullMessage.indexOf('GitHub') !== -1 ? 'GitHub 오류: ' : 'OpenAI 오류: ';
+    var statusMessage = formatImageGenerationErrorMessage_(fullMessage);
 
     Logger.log('❌ generateImageWithOpenAI_ error.message 전체: ' + fullMessage);
     Logger.log('❌ generateImageWithOpenAI_ error.stack 전체: ' + fullStack);
@@ -7612,8 +7627,14 @@ function generateImageWithOpenAI_(prompt, folderId, fileName) {
     if (typeof console !== 'undefined' && console.error) {
       console.error(fullStack);
     }
-    markImageGenerationErrorStatus_(statusPrefix + fullMessage);
-    return null;
+    markImageGenerationErrorStatus_(statusMessage);
+    return {
+      success: false,
+      errorMessage: fullMessage,
+      errorStack: fullStack,
+      responseCode: responseCode,
+      responseText: responseText
+    };
   }
 }
 
@@ -8805,7 +8826,7 @@ function testImageGenOnly() {
       Logger.log('❌ image1 OpenAI 생성 또는 GitHub 업로드 실패');
       return {
         success: false,
-        error: 'image1 openai generation failed'
+        error: (openAiImage1 && openAiImage1.errorMessage) || 'image1 openai generation failed'
       };
     }
 
@@ -8894,7 +8915,7 @@ function testImageGenOnly_OpenAI() {
       Logger.log('❌ OpenAI image1 생성 실패');
       return {
         success: false,
-        error: 'openai image1 generation failed'
+        error: (openAiImage1 && openAiImage1.errorMessage) || 'openai image1 generation failed'
       };
     }
 
