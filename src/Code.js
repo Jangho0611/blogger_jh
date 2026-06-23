@@ -3412,7 +3412,7 @@ function STEP_D1_Simple_SEO_Docs_RecentOnly(startTime) {
  * =======================================================================
  */
 
-const CONTROL_SHEET_ID = '1ln-FEi1W0ZPKmVFmBUp6iuQ8dm6ijoGVFB6qqCFP1Q0';
+const CONTROL_SHEET_ID = '1FeVD3pFFb_hFpfdEgLnMIE_SUE4NCyrvlZtFmOGvFKA';
 const IMAGE_PARENT_FOLDER_ID = '1-QkVAQf8O5vSV4ndaXEHAD1soKmhQj5t';
 
 function getRecentGeneratedSeoFile_(startTime) {
