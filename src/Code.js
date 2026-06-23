@@ -70,6 +70,8 @@ function onOpen() {
       .addItem('② 사진 업로드 폴더 열기', 'openUploadFolder_')
       .addItem('③ 발행', 'runPublishOnly')
       .addSeparator()
+      .addItem('⚠ 실행 잠금 해제', 'clearExecutionLocks')
+      .addSeparator()
       .addItem('🔄 초기화 (새 글 시작)', 'resetForNewPost')
       .addToUi();
   } catch (error) {
@@ -122,6 +124,21 @@ function releaseExecutionFlag_(flagKey, label) {
   } catch (error) {
     Logger.log('⚠️ 실행 잠금 해제 실패 (' + label + '): ' + error.message);
   }
+}
+
+function clearExecutionLocks() {
+  var props = PropertiesService.getScriptProperties();
+  var flags = [
+    EXECUTION_FLAGS.RUN_ALL_AUTO_RUNNING,
+    EXECUTION_FLAGS.GENERATE_RUNNING,
+    EXECUTION_FLAGS.OPENAI_IMAGE_RUNNING,
+    EXECUTION_FLAGS.PUBLISH_RUNNING
+  ];
+  for (var i = 0; i < flags.length; i++) {
+    props.deleteProperty(flags[i]);
+  }
+  Logger.log('🔓 실행 잠금 플래그 해제: ' + flags.join(', '));
+  SpreadsheetApp.getUi().alert('실행 잠금 플래그를 해제했습니다.');
 }
 
 function hasPendingInputOrPreprocess_() {
