@@ -13,7 +13,11 @@ const PROP_KEYS = {
   CLAUDE_API_KEY: 'CLAUDE_API_KEY',
   GEMINI_API_KEY: 'GEMINI_API_KEY',
   UNSPLASH_ACCESS_KEY: 'UNSPLASH_ACCESS_KEY',
-  GITHUB_TOKEN: 'GITHUB_TOKEN'
+  GITHUB_TOKEN: 'GITHUB_TOKEN',
+  GITHUB_OWNER: 'GITHUB_OWNER',
+  GITHUB_REPO: 'GITHUB_REPO',
+  GITHUB_BRANCH: 'GITHUB_BRANCH',
+  GITHUB_IMAGE_DIR: 'GITHUB_IMAGE_DIR'
 };
 
 const EXECUTION_FLAGS = {
@@ -175,6 +179,22 @@ function getUnsplashKey_() {
  */
 function getGithubToken_() {
   return PropertiesService.getScriptProperties().getProperty(PROP_KEYS.GITHUB_TOKEN) || '';
+}
+
+function getGithubImageConfig_() {
+  var props = PropertiesService.getScriptProperties();
+  var config = {
+    owner: String(props.getProperty(PROP_KEYS.GITHUB_OWNER) || 'Jangho0611').trim(),
+    repo: String(props.getProperty(PROP_KEYS.GITHUB_REPO) || 'blogger_jh').trim(),
+    branch: String(props.getProperty(PROP_KEYS.GITHUB_BRANCH) || 'main').trim(),
+    imageDir: String(props.getProperty(PROP_KEYS.GITHUB_IMAGE_DIR) || 'images').trim()
+  };
+
+  config.imageDir = config.imageDir.replace(/^\/+|\/+$/g, '');
+  if (!config.owner || !config.repo || !config.branch || !config.imageDir) {
+    throw new Error('GitHub 이미지 설정이 비어 있습니다. GITHUB_OWNER, GITHUB_REPO, GITHUB_BRANCH, GITHUB_IMAGE_DIR를 확인하세요.');
+  }
+  return config;
 }
 
 function moveSourceFileToProcessedFolder_(fileId) {
@@ -7640,10 +7660,15 @@ function generateImageWithOpenAI_(prompt, folderId, fileName) {
 
 function uploadImageToGitHub_(base64Data, fileName) {
   var githubToken = getGithubToken_();
+  var githubConfig = getGithubImageConfig_();
   var resolvedFileName = String(fileName || ('image_' + new Date().getTime() + '.png')).trim();
   var normalizedBase64 = String(base64Data || '').trim();
   var dataUriMatch = normalizedBase64.match(/^data:([^;]+);base64,(.+)$/);
-  var apiUrl = 'https://api.github.com/repos/kangHo-Jun/Blog/contents/images/' + encodeURIComponent(resolvedFileName);
+  var encodedImagePath = encodeURIComponent(githubConfig.imageDir + '/' + resolvedFileName).replace(/%2F/g, '/');
+  var apiUrl = 'https://api.github.com/repos/' +
+    encodeURIComponent(githubConfig.owner) + '/' +
+    encodeURIComponent(githubConfig.repo) +
+    '/contents/' + encodedImagePath;
 
   if (!githubToken) {
     throw new Error('GITHUB_TOKEN이 설정되지 않았습니다. Properties Service에 저장하세요.');
@@ -7673,7 +7698,8 @@ function uploadImageToGitHub_(base64Data, fileName) {
   var existingText = existingResponse.getContentText();
   var payload = {
     message: 'Add blog image ' + resolvedFileName,
-    content: normalizedBase64
+    content: normalizedBase64,
+    branch: githubConfig.branch
   };
 
   if (existingCode === 200) {
@@ -7714,7 +7740,11 @@ function uploadImageToGitHub_(base64Data, fileName) {
     throw new Error('GitHub 업로드 실패: ' + responseText);
   }
 
-  return 'https://raw.githubusercontent.com/kangHo-Jun/Blog/main/images/' + encodeURIComponent(resolvedFileName);
+  return 'https://raw.githubusercontent.com/' +
+    encodeURIComponent(githubConfig.owner) + '/' +
+    encodeURIComponent(githubConfig.repo) + '/' +
+    encodeURIComponent(githubConfig.branch) + '/' +
+    encodedImagePath;
 }
 
 function uploadBlobToGitHub_(blob, fileName) {
@@ -8674,7 +8704,7 @@ function testGitHubImageUpload() {
     Logger.log('✅ GitHub 이미지 업로드 테스트 성공');
     Logger.log('📡 응답 코드: 200~299 확인');
     Logger.log('🔗 공개 URL: ' + publicUrl);
-    Logger.log('📁 GitHub 저장소 확인 경로: kangHo-Jun/Blog/images/' + fileName);
+    Logger.log('📁 GitHub 저장소 확인 URL: ' + publicUrl);
 
     return {
       success: true,
