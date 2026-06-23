@@ -3624,6 +3624,22 @@ function markGenerateRetryStatus_(message) {
   }
 }
 
+function markImageGenerationErrorStatus_(message) {
+  try {
+    var spreadsheet = SpreadsheetApp.openById(CONTROL_SHEET_ID);
+    var sheet = spreadsheet.getSheetByName(SHEET_NAME_MAIN);
+    if (!sheet) return;
+
+    var targetRow = getPublishControlRow_(sheet);
+    var rowIndex = targetRow && targetRow.rowIndex ? targetRow.rowIndex : 2;
+    var safeMessage = String(message || '이미지 생성 오류').substring(0, 45000);
+    sheet.getRange(rowIndex, 7).setValue(safeMessage);
+    Logger.log('📛 이미지 생성 오류 상태 기록 완료 (행: ' + rowIndex + ')');
+  } catch (error) {
+    Logger.log('⚠️ 이미지 생성 오류 상태 기록 실패: ' + error.message);
+  }
+}
+
 function ensurePublishControlHeaders_(sheet) {
   if (!sheet) return;
 
@@ -7472,6 +7488,10 @@ function getNextImagenFileName_(folder) {
 }
 
 function generateImageWithOpenAI_(prompt, folderId, fileName) {
+  var response = null;
+  var responseCode = 0;
+  var responseText = '';
+  var openAiModel = 'gpt-image-2';
   try {
     var apiKey = PropertiesService.getScriptProperties().getProperty(PROP_KEYS.OPENAI_API_KEY);
     if (!apiKey) {
@@ -7480,7 +7500,7 @@ function generateImageWithOpenAI_(prompt, folderId, fileName) {
 
     var resolvedFileName = String(fileName || ('openai_' + new Date().getTime() + '.png')).trim();
     var payload = {
-      model: 'gpt-image-2',
+      model: openAiModel,
       prompt: prompt,
       n: 1,
       size: '1024x1024',
@@ -7490,10 +7510,8 @@ function generateImageWithOpenAI_(prompt, folderId, fileName) {
     Logger.log('🎨 === OpenAI 이미지 생성 시작 ===');
     Logger.log('🖼️ 저장 파일명: ' + resolvedFileName);
     Logger.log('📝 OpenAI 프롬프트(앞 200자): ' + String(prompt || '').substring(0, 200));
+    Logger.log('🧠 OpenAI 이미지 모델: ' + openAiModel);
 
-    var response = null;
-    var responseCode = 0;
-    var responseText = '';
     var maxRetries = 3;
     for (var attempt = 1; attempt <= maxRetries; attempt++) {
       response = UrlFetchApp.fetch('https://api.openai.com/v1/images/generations', {
@@ -7509,7 +7527,7 @@ function generateImageWithOpenAI_(prompt, folderId, fileName) {
       responseCode = response.getResponseCode();
       responseText = response.getContentText();
       Logger.log('📡 OpenAI 이미지 응답 코드: ' + responseCode + ' (시도 ' + attempt + '/' + maxRetries + ')');
-      Logger.log('📝 OpenAI 이미지 응답(앞 200자): ' + responseText.substring(0, 200));
+      Logger.log('📝 OpenAI 이미지 응답 전체: ' + responseText);
 
       if (responseCode >= 200 && responseCode < 300) {
         break;
@@ -7565,8 +7583,19 @@ function generateImageWithOpenAI_(prompt, folderId, fileName) {
       responseCode: responseCode
     };
   } catch (error) {
-    Logger.log('❌ generateImageWithOpenAI_ 오류: ' + error.message);
-    Logger.log('❌ generateImageWithOpenAI_ 스택: ' + error.stack);
+    var fullMessage = String(error && error.message ? error.message : error);
+    var fullStack = String(error && error.stack ? error.stack : '');
+    var statusPrefix = fullMessage.indexOf('GitHub') !== -1 ? 'GitHub 오류: ' : 'OpenAI 오류: ';
+
+    Logger.log('❌ generateImageWithOpenAI_ error.message 전체: ' + fullMessage);
+    Logger.log('❌ generateImageWithOpenAI_ error.stack 전체: ' + fullStack);
+    Logger.log('❌ generateImageWithOpenAI_ OpenAI responseCode: ' + responseCode);
+    Logger.log('❌ generateImageWithOpenAI_ OpenAI responseText 전체: ' + responseText);
+    Logger.log(error);
+    if (typeof console !== 'undefined' && console.error) {
+      console.error(fullStack);
+    }
+    markImageGenerationErrorStatus_(statusPrefix + fullMessage);
     return null;
   }
 }
@@ -7635,7 +7664,7 @@ function uploadImageToGitHub_(base64Data, fileName) {
   var responseText = response.getContentText();
 
   Logger.log('📡 GitHub 업로드 응답 코드: ' + responseCode);
-  Logger.log('📝 GitHub 업로드 응답(앞 200자): ' + responseText.substring(0, 200));
+  Logger.log('📝 GitHub 업로드 응답 전체: ' + responseText);
 
   if (responseCode < 200 || responseCode >= 300) {
     if (responseCode === 401 || responseCode === 403) {
