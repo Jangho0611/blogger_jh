@@ -66,6 +66,7 @@ function onOpen() {
       .addSeparator()
       .addItem('① 글 생성', 'runGenerateOnly')
       .addItem('② 이미지 생성 (OpenAI)', 'generateOpenAIImage')
+      .addItem('이미지 수정 (OpenAI)', 'reviseOpenAIImage')
       .addItem('② 사진 업로드 폴더 열기', 'openUploadFolder_')
       .addItem('③ 발행', 'runPublishOnly')
       .addSeparator()
@@ -3889,11 +3890,114 @@ function setModeManual_() {
   setImageSourceMode_('직접업로드', '직접업로드 모드: Drive 폴더에 사진을 직접 업로드하세요');
 }
 
+function getImageLogFile_() {
+  var folder = DriveApp.getFolderById(CONFIG.JSON_OUTPUT_FOLDER_ID);
+  var fileName = 'image_revision_log.json';
+  var files = folder.getFilesByName(fileName);
+  if (files.hasNext()) {
+    return files.next();
+  }
+  return folder.createFile(fileName, JSON.stringify({ logs: [] }, null, 2), MimeType.PLAIN_TEXT);
+}
+
+function readImageRevisionLogs_() {
+  try {
+    var file = getImageLogFile_();
+    var text = file.getBlob().getDataAsString();
+    var parsed = text ? JSON.parse(text) : { logs: [] };
+    if (Array.isArray(parsed)) return parsed;
+    return Array.isArray(parsed.logs) ? parsed.logs : [];
+  } catch (error) {
+    Logger.log('⚠️ 이미지 수정 로그 읽기 실패: ' + error.message);
+    return [];
+  }
+}
+
+function appendImageRevisionLog_(entry) {
+  var logs = readImageRevisionLogs_();
+  var file = getImageLogFile_();
+  var normalizedEntry = entry || {};
+  normalizedEntry.generated_at = normalizedEntry.generated_at || new Date().toISOString();
+  logs.push(normalizedEntry);
+  file.setContent(JSON.stringify({ logs: logs }, null, 2));
+  Logger.log('🧾 이미지 생성/수정 로그 저장: ' + (normalizedEntry.new_image_url || normalizedEntry.original_image_url || 'URL 없음'));
+  return normalizedEntry;
+}
+
+function findLatestImageLogByUrl_(imageUrl) {
+  var targetUrl = String(imageUrl || '').trim();
+  if (!targetUrl) return null;
+
+  var logs = readImageRevisionLogs_();
+  for (var i = logs.length - 1; i >= 0; i--) {
+    var item = logs[i] || {};
+    if (String(item.new_image_url || '').trim() === targetUrl ||
+        String(item.original_image_url || '').trim() === targetUrl) {
+      return item;
+    }
+  }
+  return null;
+}
+
+function getImagePromptFromFinalData_(finalData, imageNo) {
+  var promptObj = getImagenPromptByNo_((finalData || {}).imagen_prompts, imageNo || 1) || {};
+  return String(promptObj.prompt || promptObj.text || '').trim();
+}
+
+function buildRevisedImagePrompt_(originalPrompt, revisionRequest) {
+  return String(originalPrompt || '').trim() +
+    '\n\nRevision request:\n' +
+    String(revisionRequest || '').trim() +
+    '\n\nKeep the original blog context and technical illustration style. Apply only the requested visual corrections. No people, no brand logos, no long text inside the image.';
+}
+
+function getCurrentImage1UrlFromSheet_() {
+  var spreadsheet = SpreadsheetApp.openById(CONTROL_SHEET_ID);
+  var sheet = spreadsheet.getSheetByName(SHEET_NAME_MAIN);
+  if (!sheet) return '';
+  ensurePublishControlHeaders_(sheet);
+  var controlRow = getPublishControlRow_(sheet) || getControlRowValues_(sheet, 2);
+  return String((controlRow && controlRow.values ? controlRow.values[12] : '') || '').trim();
+}
+
+function writeCurrentImage1UrlToSheet_(imageUrl) {
+  var spreadsheet = SpreadsheetApp.openById(CONTROL_SHEET_ID);
+  var sheet = spreadsheet.getSheetByName(SHEET_NAME_MAIN);
+  if (!sheet) {
+    throw new Error('시트1을 찾을 수 없습니다.');
+  }
+  ensurePublishControlHeaders_(sheet);
+  var controlRow = getPublishControlRow_(sheet) || getControlRowValues_(sheet, 2);
+  var rowIndex = controlRow && controlRow.rowIndex ? controlRow.rowIndex : 2;
+  writeToControlSheet_('image1_url', imageUrl, rowIndex);
+  updatePublishStatus_(sheet, rowIndex, '이미지수정완료');
+}
+
+function recordGeneratedOpenAIImage_(imageResult, originalPrompt, context) {
+  if (!imageResult || !imageResult.publicUrl) return null;
+
+  var ctx = context || {};
+  return appendImageRevisionLog_({
+    type: ctx.type || 'generation',
+    image_no: ctx.imageNo || 1,
+    title: ctx.title || '',
+    original_image_url: ctx.originalImageUrl || imageResult.publicUrl,
+    original_file_name: ctx.originalFileName || imageResult.fileName || '',
+    original_prompt: String(originalPrompt || '').trim(),
+    revision_request: ctx.revisionRequest || '',
+    revised_prompt: ctx.revisedPrompt || '',
+    new_image_url: ctx.newImageUrl || imageResult.publicUrl,
+    new_file_name: ctx.newFileName || imageResult.fileName || '',
+    generated_at: new Date().toISOString()
+  });
+}
+
 function processAutoImage_(finalData, imageFolder) {
   var controlRow = getPublishControlRow_(SpreadsheetApp.openById(CONTROL_SHEET_ID).getSheetByName(SHEET_NAME_MAIN));
   var storedOpenAiUrl = String((controlRow && controlRow.values ? controlRow.values[12] : '') || '').trim();
   var imagenPrompts = Array.isArray(finalData.imagen_prompts) ? finalData.imagen_prompts : [];
   var prompt1 = '';
+  var prompt2 = '';
   var primaryType = String(((finalData.content_type || {}).primary) || '').trim();
   var title = extractTitleFromContent_(finalData.content, finalData.baseName);
   var generatedImage1;
@@ -3904,6 +4008,7 @@ function processAutoImage_(finalData, imageFolder) {
     var imageNo = Number(item.image_no);
     var promptText = String(item.prompt || item.text || '').trim();
     if (imageNo === 1 && promptText) prompt1 = promptText;
+    if (imageNo === 2 && promptText) prompt2 = promptText;
   }
 
   Logger.log('🧾 imagen_prompts.prompt1: ' + (prompt1 || '없음'));
@@ -3943,6 +4048,27 @@ function processAutoImage_(finalData, imageFolder) {
   Logger.log('✅ image1 OpenAI + image2 SVG 생성 완료');
   Logger.log('🔗 01 URL: ' + generatedImage1.publicUrl);
   Logger.log('🔗 02.svg URL: ' + generatedImage2.publicUrl);
+
+  if (!findLatestImageLogByUrl_(generatedImage1.publicUrl)) {
+    recordGeneratedOpenAIImage_(generatedImage1, prompt1, {
+      type: 'generation',
+      imageNo: 1,
+      title: title
+    });
+  }
+  appendImageRevisionLog_({
+    type: 'generation',
+    image_no: 2,
+    title: title,
+    original_image_url: generatedImage2.publicUrl,
+    original_file_name: generatedImage2.fileName,
+    original_prompt: prompt2,
+    revision_request: '',
+    revised_prompt: '',
+    new_image_url: generatedImage2.publicUrl,
+    new_file_name: generatedImage2.fileName,
+    generated_at: new Date().toISOString()
+  });
 
   return {
     mappedContent: mapGeneratedImageUrlsToPlaceholders_(finalData.content, [generatedImage1, generatedImage2]),
@@ -4182,6 +4308,12 @@ function generateOpenAIImageOnly_(seoFileId) {
       throw new Error('OpenAI image1 생성 또는 업로드에 실패했습니다.');
     }
 
+    recordGeneratedOpenAIImage_(openAiImage1, prompt1, {
+      type: 'generation',
+      imageNo: 1,
+      title: title
+    });
+
     if (!sheet) {
       throw new Error('시트1을 찾을 수 없습니다.');
     }
@@ -4214,6 +4346,101 @@ function generateOpenAIImageOnly_(seoFileId) {
 
 function generateOpenAIImage() {
   generateOpenAIImageOnly_();
+}
+
+function reviseOpenAIImage(revisionRequest) {
+  var requestText = String(revisionRequest || '').trim();
+  if (!requestText) {
+    requestText = String(SpreadsheetApp.getUi().prompt(
+      '이미지 수정 요청',
+      '수정할 내용을 입력하세요. 예: 배경을 더 밝게, 자재 단면을 더 크게, 불필요한 텍스트 제거',
+      SpreadsheetApp.getUi().ButtonSet.OK_CANCEL
+    ).getResponseText() || '').trim();
+  }
+
+  if (!requestText) {
+    Logger.log('⚠️ 이미지 수정 요청이 비어 있어 중단합니다.');
+    return {
+      success: false,
+      error: 'empty revision request'
+    };
+  }
+
+  try {
+    Logger.log('🛠️ === OpenAI 이미지 수정 시작 ===');
+    Logger.log('🛠️ 수정 요청: ' + requestText);
+
+    var seoFile = getLatestGeneratedSeoFile_();
+    if (!seoFile) {
+      throw new Error('_final_seo.json 파일을 찾지 못했습니다. 먼저 글 생성을 실행하세요.');
+    }
+
+    var finalData = JSON.parse(seoFile.getBlob().getDataAsString());
+    var title = extractTitleFromContent_(finalData.content, finalData.baseName);
+    var currentImageUrl = getCurrentImage1UrlFromSheet_();
+    if (!currentImageUrl) {
+      throw new Error('현재 image1_url이 비어 있습니다. 먼저 OpenAI 이미지를 생성하세요.');
+    }
+
+    var latestLog = findLatestImageLogByUrl_(currentImageUrl);
+    var fallbackPrompt = getImagePromptFromFinalData_(finalData, 1);
+    var originalPrompt = latestLog
+      ? String(latestLog.revised_prompt || latestLog.original_prompt || fallbackPrompt || '').trim()
+      : fallbackPrompt;
+
+    if (!originalPrompt) {
+      throw new Error('수정에 사용할 기존 이미지 프롬프트를 찾지 못했습니다.');
+    }
+
+    var revisedPrompt = buildRevisedImagePrompt_(originalPrompt, requestText);
+    var imageFolder = createImageFolderForPost_(title);
+    var revisedFileName = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyyMMdd_HHmmss') + '_' +
+      String(title || 'image').substring(0, 10).replace(/[^a-zA-Z0-9가-힣]/g, '_') + '_01_openai_rev.png';
+    var revisedImage = generateImageWithOpenAI_(revisedPrompt, imageFolder.getId(), revisedFileName);
+
+    if (!revisedImage || !revisedImage.publicUrl) {
+      throw new Error('수정 이미지 생성 또는 업로드에 실패했습니다.');
+    }
+
+    writeCurrentImage1UrlToSheet_(revisedImage.publicUrl);
+    appendImageRevisionLog_({
+      type: 'revision',
+      image_no: 1,
+      title: title,
+      original_image_url: currentImageUrl,
+      original_file_name: latestLog ? String(latestLog.new_file_name || latestLog.original_file_name || '') : '',
+      original_prompt: originalPrompt,
+      revision_request: requestText,
+      revised_prompt: revisedPrompt,
+      new_image_url: revisedImage.publicUrl,
+      new_file_name: revisedImage.fileName,
+      generated_at: new Date().toISOString()
+    });
+
+    Logger.log('🛠️ 수정 전 이미지 URL: ' + currentImageUrl);
+    Logger.log('🛠️ 수정 후 이미지 URL: ' + revisedImage.publicUrl);
+    Logger.log('🧾 원본 프롬프트(앞 300자): ' + originalPrompt.substring(0, 300));
+    Logger.log('🧾 수정 프롬프트(앞 300자): ' + revisedPrompt.substring(0, 300));
+    SpreadsheetApp.getActiveSpreadsheet().toast('이미지 수정 완료. M열 image1_url이 새 URL로 교체되었습니다.', '대산 블로그', 5);
+
+    return {
+      success: true,
+      originalImageUrl: currentImageUrl,
+      originalPrompt: originalPrompt,
+      revisionRequest: requestText,
+      revisedPrompt: revisedPrompt,
+      newImageUrl: revisedImage.publicUrl,
+      generatedAt: new Date().toISOString()
+    };
+  } catch (error) {
+    Logger.log('❌ reviseOpenAIImage 오류: ' + error.message);
+    Logger.log('❌ reviseOpenAIImage 스택: ' + error.stack);
+    SpreadsheetApp.getUi().alert('이미지 수정 오류\n\n' + error.message);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
 }
 
 function openUploadFolder_() {
@@ -7302,6 +7529,7 @@ function generateImageWithOpenAI_(prompt, folderId, fileName) {
 
     var responseJson = JSON.parse(response.getContentText());
     var imageBlob;
+    var sourceImageUrl = '';
 
     if (responseJson.data && responseJson.data[0].b64_json) {
       var b64Data = responseJson.data[0].b64_json;
@@ -7313,6 +7541,7 @@ function generateImageWithOpenAI_(prompt, folderId, fileName) {
       Logger.log('🧾 OpenAI 응답 형식: b64_json');
     } else if (responseJson.data && responseJson.data[0].url) {
       var imageUrl = responseJson.data[0].url;
+      sourceImageUrl = imageUrl;
       Logger.log('🧾 OpenAI 응답 형식: url');
       Logger.log('🔗 OpenAI 원본 이미지 URL: ' + imageUrl);
       imageBlob = UrlFetchApp.fetch(imageUrl).getBlob();
@@ -7330,6 +7559,9 @@ function generateImageWithOpenAI_(prompt, folderId, fileName) {
       fileName: resolvedFileName,
       mimeType: 'image/png',
       publicUrl: publicUrl,
+      sourceImageUrl: sourceImageUrl,
+      prompt: prompt,
+      generatedAt: new Date().toISOString(),
       responseCode: responseCode
     };
   } catch (error) {
